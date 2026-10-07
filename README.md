@@ -32,6 +32,8 @@ The model outputs a probability of default for each customer. Turning that into 
 
 The original column names (`PAY_0`, `PAY_2`, `BILL_AMT1`, etc.) were renamed to the month-labelled versions above. Overall default rate is 22.1%.
 
+`SEX` is coded 1 = male, 2 = female, per the UCI dataset documentation — the notebooks themselves never state this mapping, so it's worth re-checking against the dataset page before relying on it in a group-level table (as Section 9 does).
+
 ### Cleaning decisions
 
 **Undocumented category codes.** `EDUCATION` contains values 0, 5, and 6, and `MARRIAGE` contains 0, none of which appear in the documentation. These were merged into each variable's existing "other" category (4 for education, 3 for marriage) rather than dropped.
@@ -52,19 +54,39 @@ The original column names (`PAY_0`, `PAY_2`, `BILL_AMT1`, etc.) were renamed to 
 | 3 | 3 months behind | 76% |
 | 4+ | 4+ months behind | 50–78%, small groups |
 
+![Default rate by September repayment status](images/sep_repay_default.png)
+
+*Statuses above 4 are left off the chart — each has well under 100 customers behind them, too few for a reliable rate.*
+
 One month behind roughly doubles default risk; two months quintuples it. Statuses above 3 contain very few customers each, and their rates should not be over-read. The same pattern holds for earlier months, flattening somewhat the further back you go.
 
-**Credit limit shows a clear gradient.** Default rate falls from 32% in the lowest limit quintile to 14% in the highest. Credit limit is set by the bank, so it already encodes the bank's own prior assessment of the customer.
+**Credit limit shows a clear gradient.** Default rate falls from 32% for customers with a $10,000–$50,000 limit to 14% for customers above $270,000. Credit limit is set by the bank, so it already encodes the bank's own prior assessment of the customer — this gradient is partly a readout of the bank's existing risk model, not purely a new signal.
 
-**Utilization matters at the extreme.** 2,115 customers had a September balance above their credit limit. They defaulted at 30.1%, against the 22.1% base rate.
+| Limit range | Default rate |
+|---|---|
+| $10,000–$50,000 | 32% |
+| $50,000–$100,000 | 26% |
+| $100,000–$180,000 | 20% |
+| $180,000–$270,000 | 17% |
+| $270,000+ | 14% |
+
+![Default rate by credit limit range](images/default_by_limit_bin.png)
+
+**Utilization is U-shaped, not linear.** Customers with a September balance above their credit limit (2,115 of them) defaulted at 30.1%, against the 22.1% base rate — the obvious "high utilization is risky" story. But the low end is risky too: customers using essentially none of their limit (bottom fifth, ≤1.1% utilized) defaulted at 21.8%, *higher* than customers using a light-but-nonzero amount (next fifth, 1.1%–13.1% utilized), who defaulted at just 15.3% — the lowest rate anywhere in the utilization range. The likely explanation is that near-zero utilization includes dormant cards: accounts that aren't being actively used, possibly belonging to customers who have otherwise disengaged, rather than simply "safe because unused."
+
+![Default rate by September utilization](images/sep_util_default.png)
+
+**How much of the bill gets paid matters more than the raw amounts.** Customers who paid under 4% of their prior bill (the bottom fifth by payment ratio) defaulted at 33.5%. Customers who paid the full bill or more defaulted at just 10.4% — about a 3x difference. This is the strongest relationship behind the payment-ratio features used in Section 5.
+
+![Default rate by September payment ratio](images/sep_pay_rate_default.png)
 
 **Demographics barely move.** Default rates span roughly 19% to 27% across age, education, and marital groups, compared with 13% to 76% across repayment statuses.
 
 | Variable | Group | Default rate |
 |---|---|---|
-| Age | Youth | 27% |
-| | Adults | 22% |
-| | Seniors | 25% |
+| Age | Youth (≤24) | 27% |
+| | Adults (25–64) | 22% |
+| | Seniors (65+, n=110) | 25% |
 | Education | Graduate school | 19% |
 | | University | 24% |
 | | High school | 25% |
@@ -72,6 +94,8 @@ One month behind roughly doubles default risk; two months quintuples it. Statuse
 | Marriage | Married | 23% |
 | | Single | 21% |
 | | Other | 24% |
+
+The Seniors row is based on only 110 customers (0.4% of the dataset), so its 25% default rate is noisy and shouldn't be read as a reliable estimate of senior default risk.
 
 ## 4. Baseline
 
@@ -122,6 +146,8 @@ The likely explanation is redundancy. XGBoost already has the raw bill amounts, 
 The full-population result leaves an open question. A customer who is already two months behind is obviously high-risk, and a bank doesn't need a model to see that. The more useful question is: **among customers who are currently up to date, who goes bad next month?**
 
 This section repeats the analysis on customers with a September repayment status of 0 or below, and also drops the repayment-status columns from the feature set entirely (demographics, bill amounts, and payment amounts remain). The problem gets substantially harder, which is the point.
+
+This subgroup contains 23,182 of the 30,000 customers (77%), with a default rate of 13.8% — well below the 22.1% population rate, confirming these customers really are lower-risk on average, even though a meaningful share of them go on to default anyway.
 
 | Feature set | Logistic regression AUC | XGBoost AUC |
 |---|---|---|
@@ -176,7 +202,9 @@ The final model (XGBoost, raw + payment ratios, full population) was trained on 
 | Metric | Cross-validated | Test |
 |---|---|---|
 | ROC-AUC | 0.761 | 0.760 |
-| PR-AUC | — | 0.528 (base rate 0.221) |
+| PR-AUC | 0.521 | 0.528 (base rate 0.221) |
+
+(The cross-validated PR-AUC was computed with the same `average_precision` scoring as the ROC-AUC figure above, on the same raw + payment-ratio feature set, fold σ ±0.008. It isn't saved as a notebook cell yet — worth adding an `average_precision` `cross_val_score` call to `06_threshold_and_cost.ipynb` so this number is reproducible from the repo rather than only from this README.)
 
 | | Predicted pay | Predicted default |
 |---|---|---|
@@ -231,6 +259,12 @@ predicting_credit_card_payment/
 ├── data/
 │   └── raw/
 │       └── UCI_Credit_Card.csv
+├── images/
+│   ├── sep_repay_default.png       # default rate by September repayment status
+│   ├── default_by_limit_bin.png    # default rate by credit limit range
+│   ├── sep_util_default.png        # default rate by September utilization
+│   ├── sep_pay_rate_default.png    # default rate by September payment ratio
+│   └── sep_pay_ratio_hist.png      # payment ratio distribution (not currently embedded)
 ├── notebooks/
 │   ├── 01_eda.ipynb                  # cleaning, renaming, exploratory analysis
 │   ├── 02_baseline.ipynb             # baseline logistic regression / XGBoost models
